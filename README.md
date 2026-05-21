@@ -3,7 +3,7 @@ Designed and assembled a two-wheeled robot capable of navigating indoor environm
 
 Obstacle-Avoiding Micro-Rover 🚗
 Overview
-This is a first-year undergraduate project (developed for the Interdisciplinary Design Project module at Aston University) demonstrating hardware-software integration and autonomous control logic.
+This is a first-year undergraduate project  demonstrating hardware-software integration and autonomous control logic.
 The project features a custom-built, two-wheeled autonomous rover that navigates environments without human input. It uses an ultrasonic distance sensor to detect obstacles, and an Arduino processes this data in real-time to steer the motors.
 To improve on standard hobbyist designs, the control firmware has been written as a non-blocking Finite State Machine (FSM). This ensures the processor never freezes and can continuously monitor the environment while executing movement maneuvers.
 Hardware Components Used
