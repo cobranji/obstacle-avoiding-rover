@@ -1,0 +1,186 @@
+// Pin Allocations (Verified against Arduino Uno layout)
+const int TRIG_PIN = 9;   // Trigger pin (Output)
+const int ECHO_PIN = 10;  // Echo pin (Input)
+
+// Left Motor (H-Bridge Channel A)
+const int IN1 = 4;
+const int IN2 = 5;
+const int ENA = 3;        // PWM speed control
+
+// Right Motor (H-Bridge Channel B)
+const int IN3 = 6;
+const int IN4 = 7;
+const int ENB = 11;       // PWM speed control
+
+// Control Constants
+const int DISTANCE_THRESHOLD = 20; // Trigger distance in cm
+const int MOTOR_SPEED = 180;        // Target PWM speed (0 to 255)
+
+// Safe timeout for pulseIn: Sound travels ~4m (max sensor range) 
+// and back in approx 23.5ms. Timeout set to 24000 microseconds.
+const unsigned long SENSOR_TIMEOUT = 24000; 
+
+// Finite State Machine (FSM) States
+enum RoverState {
+  DRIVE_FORWARD,
+  STOP_BEFORE_REVERSE,
+  REVERSE,
+  TURN_RIGHT,
+  STOP_BEFORE_FORWARD
+};
+
+// Global variables for non-blocking execution
+RoverState currentState = DRIVE_FORWARD;
+unsigned long stateTimer = 0;       // Stores timestamp for non-blocking state changes
+unsigned long lastSensorPoll = 0;   // Stores timestamp for polling interval
+const unsigned long POLL_INTERVAL = 60; // Poll sensor every 60ms to avoid echo interference
+
+long distanceCm = 0;
+
+void setup() {
+  // Initialize Serial at 9600 baud for lab debugging
+  Serial.begin(9600);
+  
+  // Set sensor pin modes
+  pinMode(TRIG_PIN, OUTPUT);
+  pinMode(ECHO_PIN, INPUT);
+  
+  // Set motor controller pin modes
+  pinMode(IN1, OUTPUT);
+  pinMode(IN2, OUTPUT);
+  pinMode(IN3, OUTPUT);
+  pinMode(IN4, OUTPUT);
+  pinMode(ENA, OUTPUT);
+  pinMode(ENB, OUTPUT);
+  
+  Serial.println("==========================================");
+  Serial.println("   ASTON ROVER CONTROL SYSTEM ACTIVE      ");
+  Serial.println("==========================================");
+  
+  stateTimer = millis();
+}
+
+void loop() {
+  unsigned long currentMillis = millis();
+  
+  // 1. Poll the Ultrasonic Sensor every 60ms without blocking the loop
+  if (currentMillis - lastSensorPoll >= POLL_INTERVAL) {
+    distanceCm = getUltrasonicDistance();
+    lastSensorPoll = currentMillis;
+  }
+  
+  // 2. Execute Rover Control Logic based on current state
+  runFSM(currentMillis);
+}
+
+// State Machine logic to manage movement flow cleanly
+void runFSM(unsigned long currentMillis) {
+  unsigned long timeSpentInState = currentMillis - stateTimer;
+  
+  switch (currentState) {
+    
+    case DRIVE_FORWARD:
+      moveForward();
+      
+      // Check if path is blocked (ignore 0/error/timeout readings)
+      if (distanceCm > 0 && distanceCm < DISTANCE_THRESHOLD) {
+        Serial.print("[FSM] Obstacle detected at: ");
+        Serial.print(distanceCm);
+        Serial.println(" cm. Stopping motors.");
+        
+        moveStop();
+        transitionTo(STOP_BEFORE_REVERSE, currentMillis);
+      }
+      break;
+      
+    case STOP_BEFORE_REVERSE:
+      // Pause 200ms to let forward momentum stop (protects gears and driver board)
+      if (timeSpentInState >= 200) { 
+        Serial.println("[FSM] Momentum settled. Reversing...");
+        moveBackward();
+        transitionTo(REVERSE, currentMillis);
+      }
+      break;
+      
+    case REVERSE:
+      // Reverse for 400 milliseconds to gain clearing space
+      if (timeSpentInState >= 400) {
+        Serial.println("[FSM] Distance cleared. Turning...");
+        turnRight();
+        transitionTo(TURN_RIGHT, currentMillis);
+      }
+      break;
+      
+    case TURN_RIGHT:
+      // Turn right in place for 500 milliseconds
+      if (timeSpentInState >= 500) {
+        Serial.println("[FSM] Turn complete. Stopping motors to settle.");
+        moveStop();
+        transitionTo(STOP_BEFORE_FORWARD, currentMillis); 
+      }
+      break;
+
+    case STOP_BEFORE_FORWARD:
+      // Pause 200ms to protect gearboxes before resuming forward motion
+      if (timeSpentInState >= 200) {
+        // If the sensor timed out (-1), read 0, or reads clear, transition forward
+        if (distanceCm == -1 || distanceCm == 0 || distanceCm >= DISTANCE_THRESHOLD) {
+          Serial.println("[FSM] Path clear. Transitioning to DRIVE_FORWARD.");
+          transitionTo(DRIVE_FORWARD, currentMillis);
+        } else {
+          // If path is still blocked after the turn, initiate another turn
+          Serial.print("[FSM] Path still blocked (");
+          Serial.print(distanceCm);
+          Serial.println(" cm). Executing another turn.");
+          turnRight();
+          transitionTo(TURN_RIGHT, currentMillis);
+        }
+      }
+      break;
+  }
+}
+
+// Helper function to cleanly change states and reset the timer
+void transitionTo(RoverState newState, unsigned long currentMillis) {
+  currentState = newState;
+  stateTimer = currentMillis;
+}
+
+// Function to calculate distance (with custom timeout to prevent lock-up)
+long getUltrasonicDistance() {
+  // Clear trigger pin
+  digitalWrite(TRIG_PIN, LOW);
+  delayMicroseconds(2);
+  
+  // Send 10 microsecond pulse
+  digitalWrite(TRIG_PIN, HIGH);
+  delayMicroseconds(10);
+  digitalWrite(TRIG_PIN, LOW);
+  
+  // Measure return pulse duration (limited by SENSOR_TIMEOUT)
+  long duration = pulseIn(ECHO_PIN, HIGH, SENSOR_TIMEOUT);
+  
+  if (duration == 0) {
+    return -1; // -1 indicates sensor timeout/out of range (path is clear)
+  }
+  
+  // Speed of sound is approx. 0.0343 cm per microsecond
+  // Divided by 2 for the out-and-back journey
+  long cm = (duration * 0.0343) / 2;
+  return cm;
+}
+
+// Motor Abstraction Functions (Set speed and direction pins)
+void runMotors(int in1, int in2, int in3, int in4) {
+  analogWrite(ENA, MOTOR_SPEED);
+  analogWrite(ENB, MOTOR_SPEED);
+  digitalWrite(IN1, in1);
+  digitalWrite(IN2, in2);
+  digitalWrite(IN3, in3);
+  digitalWrite(IN4, in4);
+}
+
+void moveForward()  { runMotors(HIGH, LOW, HIGH, LOW); }
+void moveBackward() { runMotors(LOW, HIGH, LOW, HIGH); }
+void turnRight()    { runMotors(HIGH, LOW, LOW, HIGH); } // Pivot turn in-place
+void moveStop()     { runMotors(LOW, LOW, LOW, LOW);   }
